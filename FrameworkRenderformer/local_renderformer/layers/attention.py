@@ -182,16 +182,14 @@ class MultiHeadAttention(nn.Module):
                 attn_mask = None
 
             # ====== HW8_TODO: Implement Scaled Dot-Product Attention ======
-            # Given q, k, v of shape [B, H, N, D] with RoPE already applied,
-            # and attn_mask of shape [B, H, 1, N] (True = valid, keep):
-            #   1. Compute scores = q @ k^T / sqrt(D)
-            #   2. Apply mask: set masked positions to -inf (note: invert mask!)
-            #   3. Softmax: attn_weights = F.softmax(scores, dim=-1)
-            #   4. Weighted sum: attn_output = attn_weights @ v
-            #   5. Reshape: [B, H, N, D] → [B, N, H*D]
-            # Hint: torch.matmul, torch.masked_fill, F.softmax
+            d_k = q.size(-1)
+            scores = torch.matmul(q, k.transpose(-2, -1)) / (d_k ** 0.5)
+            if attn_mask is not None:
+                scores = scores.masked_fill(~attn_mask, float('-inf'))
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_output = torch.matmul(attn_weights, v)
+            attn_output = attn_output.transpose(1, 2).contiguous().view(bs, src_len, -1)
             # ==============================================================
-            raise NotImplementedError("HW8_TODO: Scaled Dot-Product Attention")
         elif ATTN == 'flash_attn':
             # self-attn
             if self.is_self_attn:
@@ -631,25 +629,23 @@ class TransformerEncoder(nn.Module):
         if self.rope_dim is not None:
             assert triangle_pos is not None, "triangle_pos must be provided if rope_dim is not None"
             # ====== HW8_TODO: Implement Relative Spatial P.E. (RoPE) ======
-            # Compute rotary position embeddings from triangle vertex positions.
-            #   1. Call self.rope_emb.get_triangle_freqs(triangle_pos)
-            #   2. Convert frequencies to cos/sin via
-            #      freqs_to_cos_sin(rope_freqs, head_dim=self.head_dim)
-            #   3. Assign results to rope_cos, rope_sin
+            rope_freqs = self.rope_emb.get_triangle_freqs(triangle_pos)
+            rope_cos, rope_sin = freqs_to_cos_sin(rope_freqs, head_dim=self.head_dim)
             # ==============================================================
-            raise NotImplementedError("HW8_TODO: RoPE Computation")
         else:
             rope_cos = rope_sin = None
 
         # ====== HW8_TODO: Implement Self-Attention Encoder Forward ======
-        # Pass the sequence x through all encoder layers.
-        #   - Each AttentionLayer expects query, kv, masks, and RoPE.
-        #   - For self-attention, pass kv=None (or omit it).
-        #   - If encoder_skip_from_layer and encoder_skip_to_layer
-        #     are set, add a skip connection between those layers.
-        # Return the processed sequence x.
+        skip_x = None
+        for i, layer in enumerate(self.layers):
+            layer_num = i + 1  # 1-based
+            if self.encoder_skip_from_layer is not None and layer_num == self.encoder_skip_from_layer:
+                skip_x = x.clone()
+            x = layer(x, src_key_padding_mask=src_key_padding_mask, rope_cos=rope_cos, rope_sin=rope_sin)
+            if self.encoder_skip_to_layer is not None and layer_num == self.encoder_skip_to_layer:
+                x = x + skip_x
+        return x
         # ===============================================================
-        raise NotImplementedError("HW8_TODO: Self-Attention Encoder Forward")
 
 
 class TransformerDecoder(nn.Module):
@@ -739,31 +735,24 @@ class TransformerDecoder(nn.Module):
         if self.rope_dim is not None:
             assert triangle_pos is not None and ray_pos is not None, "triangle_pos and ray_pos must be provided if rope_dim is not None"
             # ====== HW8_TODO: Implement RoPE for Rays and Triangles ======
-            # Compute TWO SEPARATE rotary position embeddings:
-            #   1. Query RoPE (for ray patches): from ray_pos via
-            #      self.rope_emb.get_triangle_freqs(ray_pos)
-            #   2. Context RoPE (for triangles): from triangle_pos via
-            #      self.rope_emb.get_triangle_freqs(triangle_pos)
-            # Convert both to cos/sin with freqs_to_cos_sin().
-            # Assign to: rope_cos, rope_sin (ray) and
-            #            rope_ctx_cos, rope_ctx_sin (triangle)
+            rope_freqs = self.rope_emb.get_triangle_freqs(ray_pos)
+            rope_cos, rope_sin = freqs_to_cos_sin(rope_freqs, head_dim=self.head_dim)
+            rope_ctx_freqs = self.rope_emb.get_triangle_freqs(triangle_pos)
+            rope_ctx_cos, rope_ctx_sin = freqs_to_cos_sin(rope_ctx_freqs, head_dim=self.head_dim)
             # ============================================================
-            raise NotImplementedError("HW8_TODO: Decoder RoPE Computation")
         else:
             rope_cos = rope_sin = rope_ctx_cos = rope_ctx_sin = None
 
         out_list = []
 
         # ====== HW8_TODO: Implement Cross-Attention Decoder Forward ======
-        # Decode rendered features via cross-attention layers.
-        #   - Each layer takes ray tokens (x) as query and triangle
-        #     tokens (ctx) as key/value.
-        #   - Two sets of RoPE: one for ray positions, one for triangles.
-        #   - If out_layers is given, collect intermediate outputs for
-        #     multi-scale decoding (DPT). Each output must be wrapped
-        #     in a list: out_list.append([x]) — DPT expects this format.
-        # Return x if no intermediates needed, else return the list.
+        for i, layer in enumerate(self.layers):
+            x = layer(x, kv=ctx, src_key_padding_mask=src_key_padding_mask,
+                      rope_cos=rope_cos, rope_sin=rope_sin,
+                      rope_ctx_cos=rope_ctx_cos, rope_ctx_sin=rope_ctx_sin,
+                      force_sdpa=tf32_mode, patch_h=patch_h, patch_w=patch_w)
+            if out_layers and i in out_layers:
+                out_list.append([x])
         # ================================================================
-        raise NotImplementedError("HW8_TODO: Cross-Attention Decoder Forward")
 
         return x if not out_list else out_list

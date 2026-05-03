@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vn_pe_num_freqs", type=int, default=6)
     parser.add_argument("--no_vn", action="store_true")
     parser.add_argument("--ffn_opt", choices=["checkpoint", "none"], default="checkpoint")
+    parser.add_argument("--use_object_emb", action="store_true", help="Add per-object segment embeddings (object-level encoding).")
+    parser.add_argument("--object_emb_max_objects", type=int, default=64, help="Embedding table size for object IDs.")
 
     parser.add_argument("--loss_type", choices=["log_l1", "l1", "mse"], default="log_l1")
     parser.add_argument("--use_lpips", action="store_true")
@@ -263,6 +265,8 @@ def main() -> None:
         vn_pe_num_freqs=args.vn_pe_num_freqs,
         use_vn_encoder=not args.no_vn,
         ffn_opt=args.ffn_opt,
+        use_object_emb=args.use_object_emb,
+        object_emb_max_objects=args.object_emb_max_objects,
     )
     model = CourseRenderFormerWrapper(config).to(device)
 

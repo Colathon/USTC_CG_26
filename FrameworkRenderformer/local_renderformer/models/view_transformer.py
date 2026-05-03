@@ -101,21 +101,32 @@ class ViewTransformer(nn.Module):
         """
 
         # ====== HW8_TODO: Implement Ray Bundle Embedding ======
-        # Encode the ray direction map into query patch tokens:
-        #   1. Apply NeRF PE to rays via self.vdir_pe.
-        #   2. Reshape into non-overlapping patches via einops-like
-        #      rearrange, flattening spatial and channel dims.
-        #   3. Linearly project each flattened patch to latent dim,
-        #      normalize, and add a learnable patch token.
-        #   4. Create per-patch position vectors from camera_o.
-        #   5. If pe_type=='nerf', add camera position encoding to
-        #      ray_tokens and tri_tokens (reassign tri_tokens, do
-        #      NOT modify it in-place — the original reference is
-        #      shared with the caller).
-        # Variables you must define (used downstream):
-        #   ray_tokens, patch_h, patch_w, ray_token_pos
+        p = self.config.patch_size
+        patch_h = ray_map.size(1) // p
+        patch_w = ray_map.size(2) // p
+
+        # 1. Apply NeRF PE to ray direction map
+        encoded_ray = self.vdir_pe(ray_map)  # [B, H, W, C_pe]
+
+        # 2. Reshape into non-overlapping patches
+        ray_patches = rearrange(encoded_ray, 'b (h1 p1) (w1 p2) c -> b (h1 w1) (c p1 p2)', p1=p, p2=p)
+
+        # 3. Linear projection + norm + learnable patch token
+        ray_tokens = self.ray_map_encoder_norm(self.ray_map_encoder(ray_patches)) + self.ray_map_patch_token
+
+        # 4. Per-patch position: repeat camera origin to 9D and expand over patches
+        B = camera_o.size(0)
+        N_patches = patch_h * patch_w
+        camera_pos_9d = camera_o.repeat(1, 3)  # [B, 9]
+        ray_token_pos = camera_pos_9d.unsqueeze(1).expand(-1, N_patches, -1).contiguous()  # [B, N_patches, 9]
+
+        # 5. For nerf PE, add absolute position encoding to both ray and triangle tokens
+        if self.config.pe_type == 'nerf':
+            cam_pe = self.token_pos_pe_norm(self.pe_token_proj(self.pos_pe(camera_pos_9d)))  # [B, D]
+            ray_tokens = ray_tokens + cam_pe.unsqueeze(1)
+            tri_pe = self.token_pos_pe_norm(self.pe_token_proj(self.pos_pe(tri_pos)))  # [B, N_tri, D]
+            tri_tokens = tri_tokens + tri_pe
         # =====================================================
-        raise NotImplementedError("HW8_TODO: Ray Bundle Embedding")
 
         # do per-ray attention
         if self.config.use_dpt_decoder:

@@ -75,6 +75,9 @@ class RenderFormer(nn.Module, PyTorchModelHubMixin):
         self.reg_tokens = nn.Parameter(torch.randn(1, self.config.num_register_tokens, self.config.latent_dim))
         self.skip_token_num = self.config.num_register_tokens
 
+        if self.config.use_object_emb:
+            self.object_emb = nn.Embedding(self.config.object_emb_max_objects, self.config.latent_dim)
+
         # core radiosity transformer
         self.transformer = TransformerEncoder(
             num_layers=self.config.num_layers,
@@ -125,7 +128,7 @@ class RenderFormer(nn.Module, PyTorchModelHubMixin):
 
         return tri_vpos_list, valid_mask
 
-    def construct_seq(self, tri_vpos_list, texture_patch_list, valid_mask, vns):
+    def construct_seq(self, tri_vpos_list, texture_patch_list, valid_mask, vns, obj_ids=None):
         """
         From input triangle list + texture patches, construct the sequence for transformer.
 
@@ -133,6 +136,7 @@ class RenderFormer(nn.Module, PyTorchModelHubMixin):
         :param texture_patch_list: [batch_size, max_num_tri, texture_channel, patch_size, patch_size], padded
         :param valid_mask: [batch_size, max_num_tri]
         :param vns: [batch_size, max_num_tri, 3, 3], padded
+        :param obj_ids: [batch_size, max_num_tri] int, per-triangle object index (optional)
         :return: [batch_size, num_register_tokens + max_num_tri, latent_dim]
         """
         batch_size = tri_vpos_list.size(0)
@@ -149,16 +153,22 @@ class RenderFormer(nn.Module, PyTorchModelHubMixin):
         ))
 
         # ====== HW8_TODO: Implement Triangle Embedding ======
-        # Build the transformer input sequence:
-        #   1. Start with learnable register tokens (self.reg_tokens).
-        #   2. For each triangle, combine its positional encoding
-        #      (NeRF PE or RoPE), texture embedding (tri_tex_emb),
-        #      vertex normal embedding (vn_emb), and a learnable
-        #      triangle token (self.tri_token) into a single token.
-        #      Different pe_type ('nerf' vs 'rope') require different treatment.
-        #   3. Concatenate all tokens into the final sequence.
+        if self.config.pe_type == 'nerf':
+            pos_emb = self.tri_encoding_norm(self.tri_encoding_proj(self.tri_vpos_pe(tri_vpos_list)))
+            tri_tokens = pos_emb + tri_tex_emb + vn_emb + self.tri_token
+        else:  # rope: RoPE applied later in attention, use learned token here
+            tri_tokens = tri_tex_emb + vn_emb + self.tri_token
+
+        # Per-object segment embedding: adds a learned offset per object slot so the
+        # encoder can distinguish triangles from different objects without relying
+        # solely on their spatial positions.
+        if self.config.use_object_emb and obj_ids is not None:
+            obj_emb = self.object_emb(obj_ids.clamp(0, self.config.object_emb_max_objects - 1))
+            tri_tokens = tri_tokens + obj_emb
+
+        reg_tokens = self.reg_tokens.expand(batch_size, -1, -1)
+        seq = torch.cat([reg_tokens, tri_tokens], dim=1)
         # ====================================================
-        raise NotImplementedError("HW8_TODO: Triangle Embedding")
 
         # pad triangle pos (for RoPE) and valid mask (for all)
         # use center pos for RoPE on auxiliary tokens
@@ -166,7 +176,7 @@ class RenderFormer(nn.Module, PyTorchModelHubMixin):
 
         return seq, valid_mask, tri_vpos_list
 
-    def forward(self, tri_vpos_list, texture_patch_list, valid_mask, vns, rays_o, rays_d, tri_vpos_view_tf, tf32_view_tf=False):
+    def forward(self, tri_vpos_list, texture_patch_list, valid_mask, vns, rays_o, rays_d, tri_vpos_view_tf, tf32_view_tf=False, obj_ids=None):
         """
         Forward pass of the transformer.
 
@@ -180,7 +190,7 @@ class RenderFormer(nn.Module, PyTorchModelHubMixin):
         tri_vpos_view_tf: [batch_size, num_views, max_num_tri, 9], padded
         tf32_view_tf: bool, whether to use tf32 for view transformer
         """
-        seq, valid_mask_padded, tri_vpos_list = self.construct_seq(tri_vpos_list, texture_patch_list, valid_mask, vns)
+        seq, valid_mask_padded, tri_vpos_list = self.construct_seq(tri_vpos_list, texture_patch_list, valid_mask, vns, obj_ids=obj_ids)
         seq = self.transformer(seq, src_key_padding_mask=valid_mask_padded, triangle_pos=tri_vpos_list)
 
         batch_size, num_views = rays_o.size(0), rays_o.size(1)

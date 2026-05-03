@@ -27,6 +27,8 @@ def build_baseline_config(
     vn_pe_num_freqs: int = 6,
     use_vn_encoder: bool = True,
     ffn_opt: str = "checkpoint",
+    use_object_emb: bool = False,
+    object_emb_max_objects: int = 64,
 ) -> RenderFormerConfig:
     if vertex_pe_num_freqs < 4:
         raise ValueError("vertex_pe_num_freqs must be at least 4 for a safe RoPE setup.")
@@ -80,6 +82,8 @@ def build_baseline_config(
         turn_to_cam_coord=True,
         use_ldr=False,
         ffn_opt=ffn_opt,
+        use_object_emb=use_object_emb,
+        object_emb_max_objects=object_emb_max_objects,
     )
 
 
@@ -249,6 +253,13 @@ class CourseRenderFormerWrapper(nn.Module):
         else:
             tri_vpos_view_tf = tri_vpos_list.unsqueeze(1)
 
+        # per-object segment IDs: triangle at slot [o, t] -> object index o
+        if self.config.use_object_emb:
+            obj_ids = torch.arange(object_count, device=tri_pos.device).repeat_interleave(triangle_count)
+            obj_ids = obj_ids.unsqueeze(0).expand(batch_size, -1)  # [B, N_obj*N_tri]
+        else:
+            obj_ids = None
+
         rendered = self.model(
             tri_vpos_list,
             texture_patch_list,
@@ -258,6 +269,7 @@ class CourseRenderFormerWrapper(nn.Module):
             rays_d,
             tri_vpos_view_tf,
             tf32_view_tf=False,
+            obj_ids=obj_ids,
         )
         return rendered.squeeze(1).contiguous()
 

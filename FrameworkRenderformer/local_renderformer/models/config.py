@@ -97,5 +97,10 @@ class RenderFormerConfig:
     encoder_skip_to_layer: Optional[int] = None
     """Optional 1-based target layer index for an extra encoder skip connection."""
 
+    use_object_emb: bool = False
+    """Add a per-object segment embedding to each triangle token (object-level encoding)."""
+    object_emb_max_objects: int = 64
+    """Size of the object embedding lookup table."""
+
     def get(self, key, default=None):
         return getattr(self, key, default)
