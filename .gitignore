@@ -6,3 +6,11 @@ imgui.ini
 .DS_Store
 .vs
 *.zip
+
+# Homework 8
+FrameworkRenderformer/runs/
+FrameworkRenderformer/scene_export_exr_tp1/
+FrameworkRenderformer/traindata/
+FrameworkRenderformer/Results/
+FrameworkRenderformer/blender_dataset_guide/
+*.pt
